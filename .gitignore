@@ -8,3 +8,4 @@ npm-debug.log
 MANIFEST-000002
 .bcoin/
 backup/
+.idea/
