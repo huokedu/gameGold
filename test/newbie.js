@@ -10,6 +10,7 @@ const encoding = require('../lib/utils/encoding');
 const digest = require('../lib/crypto/digest');
 const random = require('../lib/crypto/random');
 const WalletDB = require('../lib/wallet/walletdb');
+const Validator = require('../lib/utils/validator');
 const WorkerPool = require('../lib/workers/workerpool');
 const Address = require('../lib/primitives/address');
 const MTX = require('../lib/primitives/mtx');
@@ -24,6 +25,7 @@ const RPCBase = require('../lib/http/rpcbase');
 const RPCError = RPCBase.RPCError;
 const errs = RPCBase.errors;
 const pkg = require('../lib/pkg');
+const Amount = require('../lib/btc/amount');
 
 function parseSecret(raw, network) {
   try {
@@ -45,7 +47,8 @@ const workers = new WorkerPool({
 
 const wdb = new WalletDB({
   network: 'testnet',
-  db: 'memory',
+  db: 'ldb',
+  location: '../.bcoin/testnet',
   verify: true,
   workers
 });
@@ -243,79 +246,153 @@ async function testP2SH(witness, nesting) {
   assert(!tx.verify(view, flags));
   assert.strictEqual(tx.getFee(view), 10000);
 }
+async function importKey() {
+  const data = await fs.readFile('../wallet.txt', 'utf8');
+  const lines = data.split(/\n+/);
+  const keys = [];
+  for (let line of lines) {
+    line = line.trim();
 
-describe('Wallet', () => {
-  it.only('should open walletdb', async () => {
-    consensus.COINBASE_MATURITY = 0;
+    if (line.length === 0)
+      continue;
+
+    if (/^\s*#/.test(line))
+      continue;
+
+    const parts = line.split(/\s+/);
+
+    if (parts.length < 4)
+      throw new RPCError(errs.DESERIALIZATION_ERROR, 'Malformed wallet.');
+
+    const secret = parseSecret(parts[0], wdb.network);
+    keys.push(secret);
+  }
+
+  for (const key of keys){
+    await wallet.importKey(0, key);
+  }
+
+  await wdb.rescan(0);
+}
+
+async function dumpwallet(){
+  let file = '../wallet.txt';
+  const tip = await wdb.getTip();
+  const time = util.date();
+
+  const out = [
+    util.fmt('# Wallet Dump created by Bcoin %s', pkg.version),
+    util.fmt('# * Created on %s', time),
+    util.fmt('# * Best block at time of backup was %d (%s).',
+      tip.height, util.revHex(tip.hash)),
+    util.fmt('# * File: %s', file),
+    ''
+  ];
+
+  const hashes = await wallet.getAddressHashes();
+
+  for (const hash of hashes) {
+    const ring = await wallet.getPrivateKey(hash);
+
+    if (!ring)
+      continue;
+
+    const addr = ring.getAddress('string');
+
+    let fmt = '%s %s label= addr=%s';
+
+    if (ring.branch === 1)
+      fmt = '%s %s change=1 addr=%s';
+
+    const str = util.fmt(fmt, ring.toSecret(), time, addr);
+
+    out.push(str);
+  }
+
+  out.push('');
+  out.push('# End of dump');
+  out.push('');
+
+  const dump = out.join('\n');
+
+  if (fs.unsupported)
+    return dump;
+
+  await fs.writeFile(file, dump, 'utf8');
+}
+
+async function encryptwallet(){
+  const wallet = await wdb.create();
+  if (wallet.master.encrypted) {
+    throw new RPCError(errs.WALLET_WRONG_ENC_STATE, 'Already running with an encrypted wallet.');
+  }
+
+  try {
+    await wallet.setPassphrase('', 'helloworld');
+  } catch (e) {
+    throw new RPCError(errs.WALLET_ENCRYPTION_FAILED, 'Encryption failed.');
+  }
+}
+
+async function listAddress(){
+  for (const path of await wallet.getPaths()) {
+    console.log(path, path.toAddress(wdb.network).toString());
+  }
+}
+
+async function getBalance(){
+  let name = 'default';
+  const minconf = 0;
+
+  if (name === '')
+    name = 'default';
+
+  if (name === '*')
+    name = null;
+
+  const balance = await wallet.getBalance(name);
+
+  let value;
+  if (minconf > 0)
+    value = balance.confirmed;
+  else
+    value = balance.unconfirmed;
+
+  return Amount.btc(value, true);
+}
+
+async function transaction(){
+  for(let [key, item] of wdb.wallets){
+    wallet = item;
+    if(!!wallet){
+      // Create new transaction
+      const t2 = new MTX();
+
+      const input = new Input();
+      input.prevout.hash = 'e3492bcb041e336a01beaf44cb83842de56a4b3b4a4d10e47bd1b7bbeb157f51';
+      input.prevout.index = 0;
+      input.sequence = 0xffffffff;
+
+      t2.inputs.push(input);
+      t2.addOutput(wallet.getAddress(), 1);
+
+      console.log(t2.toRaw().toString('hex'));
+      await wallet.sign(t2);
+      assert(t2.verify());
+    }
+  }
+}
+
+let wallet = null;
+async function run(){
+  try{
     await wdb.open();
-  });
+    //wallet = await wdb.create();    //新建钱包
+    await transaction(); //交易
+  }
+  catch(e){
+    consoel.error(e);
+  }  
+}
 
-  it.only('import key', async () => {
-    const wallet = await wdb.create();
-    const data = await fs.readFile('../wallet.txt', 'utf8');
-    const lines = data.split(/\n+/);
-    const keys = [];
-    for (let line of lines) {
-      line = line.trim();
-
-      if (line.length === 0)
-        continue;
-
-      if (/^\s*#/.test(line))
-        continue;
-
-      const parts = line.split(/\s+/);
-
-      if (parts.length < 4)
-        throw new RPCError(errs.DESERIALIZATION_ERROR, 'Malformed wallet.');
-
-      const secret = parseSecret(parts[0], wdb.network);
-      keys.push(secret);
-    }
-
-    for (const key of keys){
-      await wallet.importKey(0, key);
-    }
-
-    await wdb.rescan(0);
-  });
-
-  it.only('dump wallet', async ()=>{
-    const wallet = await wdb.create();
-
-    let sofar = [];
-    for(let cur of await wallet.getAddressHashes()){
-      const ring = await wallet.getPrivateKey(cur);
-      if (!!ring){
-        let fmt = ring.branch === 1 ? '%s %s change=1 addr=%s' : '%s %s label= addr=%s';
-        sofar.push(util.fmt(fmt, ring.toSecret(), util.date(), ring.getAddress('string')));
-      }
-    }
-    fs.writeFileSync('../t.txt', sofar.join('\n'), 'utf8');
-  });
-
-  it('list address', async ()=>{
-    const wallet = await wdb.create();
-    const addrs = [];
-    const paths = await wallet.getPaths();
-    for (const path of paths) {
-      console.log(path);
-      const addr = path.toAddress();
-      addrs.push(addr.toString(this.network));
-    }
-    console.log(addrs);
-  });
-
-  it('encryptwallet',async ()=>{
-    const wallet = await wdb.create();
-    if (wallet.master.encrypted) {
-      throw new RPCError(errs.WALLET_WRONG_ENC_STATE, 'Already running with an encrypted wallet.');
-    }
-
-    try {
-      await wallet.setPassphrase('', 'helloworld');
-    } catch (e) {
-      throw new RPCError(errs.WALLET_ENCRYPTION_FAILED, 'Encryption failed.');
-    }
-  })
-});
+run();
