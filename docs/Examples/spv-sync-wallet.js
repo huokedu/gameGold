@@ -7,10 +7,11 @@ const WalletDB = bcoin.walletdb;
 
 bcoin.set('testnet');
 
+let path = process.env.HOME || '../../../';
 // SPV chains only store the chain headers.
 const chain = Chain({
   db: 'leveldb',
-  location: process.env.HOME + '/spvchain',
+  location: path + '/spvchain',
   spv: true
 });
 

@@ -6,7 +6,7 @@ const Chain = bcoin.chain;
 const Logger = bcoin.logger;
 const util = bcoin.util;
 
-const HOME = process.env.HOME;
+const HOME = process.env.HOME || '../../../';
 
 // Setup logger to see what's Bcoin doing.
 const logger = new Logger({

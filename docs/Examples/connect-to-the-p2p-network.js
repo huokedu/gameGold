@@ -6,7 +6,7 @@ const Pool = bcoin.pool;
 
 // Create a blockchain and store it in leveldb.
 // `db` also accepts `rocksdb` and `lmdb`.
-const prefix = process.env.HOME + '/my-bcoin-environment';
+const prefix = (process.env.HOME || '../../..') + '/my-bcoin-environment';
 const chain = new Chain({
   db: 'leveldb',
   location: prefix + '/chain',
